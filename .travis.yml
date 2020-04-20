@@ -11,7 +11,7 @@ env:
 sudo: required
 dist: trusty
 before_install:
-  - rvm install 1.9.3
+  - rvm install 2.7.0
   - sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv 0C49F3730359A14518585931BC711F9BA15703C6
   - sudo add-apt-repository -y ppa:duggan/bats
   - sudo apt-add-repository -y ppa:ubuntu-toolchain-r/test
