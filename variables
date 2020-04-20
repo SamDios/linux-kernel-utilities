@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+########################################################
+# About this variables file
+#
+# Variables for the scripts have been largely
+# consolidated to this file for inspection and
+# convenience. The variables have been bifurcated
+# below in to 
+#
+# User Variables    - variables a user my want to adjust
+# Program Variables - variables that should likely be 
+#                     left alone
+#
+# What is shellcheck disable=SC2034 ?
+# The scripts are scraped by shellcheck which is a
+# script analysis tool: https://www.shellcheck.net/
+# These lines can be safely ignored.
+########################################################
+
+# Ensure root privileges
+SUDO=''
+
+if (( EUID != 0 )); then
+	# shellcheck disable=SC2034
+	SUDO='sudo'
+fi
+
+##########################################################
+
+#########################
+###   USER VARIABLES  ###
+#########################
+
+# To filter out Release Candidates replace "null" with "-rc"
+# Revert change to allow RC's. Do not use "" or " ".
+# The variable must be set!
+# shellcheck disable=SC2034
+RC_FILTER="-rc"
+if [[ $- == *i* ]]; then
+	COLUMNS=$(tput cols)
+fi
+
+# This variable is used to define the major kernel version
+# to retrieve. Adjust this as desired.
+# Example: MINVER=4 will retrieve 4.x.x
+# Example: MINVER=5 will retrieve 5.x.x
+# shellcheck disable=SC2034
+MINVER=5
+
+# On my systems, I use SOPHOS antivirus
+# During the update of a kernel, I disable this
+# application. These values can be safely ignored
+# or the scripts may be updated to disable your
+# current AntiVirus solution.
+#
+# AntiVirus management
+AV=0
+AV_ACTIVE=0
+AV_BINARY="/opt/sophos-av/bin/savdstatus"
+
+##########################################################
+
+#########################
+### PROGRAM VARIABLES ###
+#########################
+
+# Shared 
+# shellcheck disable=SC2034
+QT5CHECK=1
+# shellcheck disable=SC2034
+DEPENDENCIES="curl dkms git sudo wget whiptail "
+# shellcheck disable=SC2034
+USE_LATEST=0
+# shellcheck disable=SC2034
+UPDATENEEDED=0
+# shellcheck disable=SC2034
+OS=$(lsb_release -si)
+# shellcheck disable=SC2034
+# shellcheck disable=SC2154
+PLUS="${Cyan}[+]${Reg}"
+NOW=$(date +%h%d_%H-%M-%S)
+# shellcheck disable=SC2034
+VERAPPEND=$(date +%y.%m.%d.%H.%M)
+# shellcheck disable=SC2034
+BACKTITLE="SCRIPT SOURCE: https://github.com/mtompkins/linux-kernel-utilities"
+
+# Compile
+# shellcheck disable=SC2034
+CMP_FLDR="Build_$NOW"
+# shellcheck disable=SC2034
+OUTPUT="kernel_$NOW.tar.xz"
+# shellcheck disable=SC2034
+KRNL_CONFIG=olddefconfig
+NUMCPUS=$(< /proc/cpuinfo grep "cpu cores" | head -1 | cut -d":" -f2 | cut -c2-)
+# shellcheck disable=SC2034
+NUMTHREADS=$(( NUMCPUS*2 ))
+
+# Precompiled
+# shellcheck disable=SC2034
+FIELD=7
+# shellcheck disable=SC2034
+TMP_FLDR=$(mktemp -d)
+# shellcheck disable=SC2034
+lowlatency=-1

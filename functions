@@ -1,0 +1,755 @@
+#!/usr/bin/env bash
+
+# Requires `colors` - sourced in `functions`
+
+function whip_msg(){
+	local title="$1"
+	local msg="$2"
+	whiptail --title "${title}" --msgbox "${msg}" --backtitle "${BACKTITLE}" 20 80
+}
+
+function chk_deps(){
+	for dep in $(echo "${DEPENDENCIES}" | tr ' ' $'\n'); do
+		printf '\t%-24s' "${dep}"
+		if ! ( dpkg -l | grep -q "^ii  $dep" ); then
+			echo -e "${Red}Not Found${Reg}"
+			UPDATENEEDED=1
+			TOINSTALL+="${dep} "
+		else
+			echo -e "${Green}Found${Reg}"
+		fi
+	done
+	echo ""
+	if [ $UPDATENEEDED -eq 1 ]; then
+		update
+	fi
+}
+
+function chk_os(){
+	shopt -s nocasematch
+	if [[ "${OS,,}" != "ubuntu" ]] && [[ "${OS,,}" != "linuxmint" ]] && [[ "${OS,,}" != "edubuntu" ]] \
+	&& [[ "${OS,,}" != "kubuntu" ]] && [[ "${OS,,}" != "lubuntu" ]] && [[ "${OS,,}" != "mythbuntu" ]]; then
+		UPOS=${OS^^}
+		if ! (whiptail --yesno --defaultno --title "Precompiled Ubuntu Kernel Updater" "This script is intended to update an Ubuntu distro.\n\nYour distro detected as [${UPOS}] ... continue anyway?" 20 80); then
+			whip_msg  "Non-Ubuntu Distro Cancel" "Exiting and cleaning up."
+			echo -e "${Cyan} \_ Distro identified as ${Yellow}${OS}${Reg}. Exit requested.\n"
+			exit 0
+		fi
+	fi
+}
+
+function check_qt(){
+	printf '\t%-24s' "QT4 or QT5"
+	if pkg-config --exists Qt5Core || pkg-config --exists QtCore; then \
+		# shellcheck disable=SC2154
+		echo -e "${Green}Found${Reg}"; \
+		return 0; \
+	else \
+		echo -e "${Red}Not Found${Reg}"; \
+		return 1; \
+	fi
+}
+
+function chk_root(){
+	if [[ $EUID -eq 0 ]]; then
+		# shellcheck disable=SC2154
+		whip_msg  "${w_title_three}" "${w_msg_three}"
+	fi
+}
+
+function chk_sudoer(){
+	grep 'sudo' /etc/group | grep "$USER" > /dev/null 2>&1
+	EXIT_STAT=$?
+	if [ $EXIT_STAT -ne 0 ]
+	then
+		error "Sudo: Not found" "The user was not found in the sudo group. Cannot continue." 1
+	fi
+}
+
+function get_arch(){
+	# shellcheck disable=SC2154
+	echo -en "${Cyan} \_ Determining CPU type: "
+	if [ "$(getconf LONG_BIT)" == "64" ]; then arch=amd64; else arch=i386; fi
+	# shellcheck disable=SC2154
+	echo -e "${Yellow}${arch}${Reg}"
+}
+
+function reqexit(){
+	# shellcheck disable=SC2154
+	echo -e "${Red}Response not in the offered list of options. Interpreted as an exit request. Exiting.${Reg}"
+	exit 0
+}
+
+function set_deps(){
+	if is_remote; then
+		echo -e "${PLUS} Remote usage detected. Enabling ncurses . . ."
+		USENCURSES=1
+		DEPENDENCIES+="libncurses5 libncurses5-dev "
+	else
+		DEPENDENCIES+="qt5-qmake "
+		echo -e "${PLUS} This build script uses QT to provide a menu for the user. Detecting . . ."
+		check_qt5
+		unset USENCURSES
+	fi
+}
+
+function check_qt5(){
+	if ! check_qt &>/dev/null; then \
+		echo -e ""
+		echo -e "${Yellow}[!] QT${Reg} wasn't detected. Installing the QT5-default package . . ."
+		sudobg apt-get -qq -y install qt5-default
+		spinner $! "Installing QT5 default package . . ."
+		wait $!
+		clearline
+		echo -e "${PLUS} Installing QT5 default package"
+		echo -e " \_${Green}Complete${Reg}\n"
+	fi
+}
+
+function cleanup(){
+	rm "$OUTPUT" -f
+}
+
+function get_ubuntu_list(){
+	local FILES=($(curl -sL "${BASEURL}" | grep "v${MINVER}" | cut -d '>' -f 7 | awk '{print substr($0,1, length($0)-4)}'))
+	local FILTERED_FILES=(${FILES[@]/*$RC_FILTER*/})
+
+	NUMEL=${#FILTERED_FILES[@]}
+
+	for (( i="${NUMEL}"; i>=0; i-- ));
+	do
+		TOTAL="${TOTAL}\n${FILTERED_FILES[i]}"
+		DOWN="${DOWN}\n${FILTERED_FILES[i]}"
+	done
+
+	echo -ne "\n"
+	for ver in $(echo -e "$TOTAL"); do
+		((COUNT++))
+		printf ' %-3s Linux %-20s' "${COUNT})" "$(echo "${ver##*'/'}" | cut -d '>' -f 7 | sed 's/-$//')"
+		[ $((COUNT%4)) -eq 0 ] && echo -e -n '\n'
+	done
+
+	NUMOPTS=$COUNT
+	COUNT=0
+}
+
+function print_kernels_ubu(){
+	if [ "$(basename "$0")" = "update_ubuntu_kernel.sh" ]; then
+		echo -e "${Cyan} \_ Precompiled kernels available from ${Yellow}kernel.ubuntu.com:${Reg}"
+		get_ubuntu_list
+	elif [ "$(basename "$0")" = "bats-exec-test" ]; then
+		get_ubuntu_list
+	else
+		error "Func: Print_kernel" "Logic error in parsing latest kernel. Exiting." 1
+	fi
+}
+
+function get_debian_list(){
+	local FILES=($(curl -sL https://www.kernel.org | grep "Download complete tarball" | cut -d '.' -f 2- | cut -d '"' -f 1 ))
+	local FILTERED_FILES=(${FILES[@]/*$RC_FILTER*/})
+
+	for ver in "${FILTERED_FILES[@]}"; do
+		TOTAL="${TOTAL} https://$ver"
+	done
+
+	# Has full URL file names
+	TOTAL=(${TOTAL[@]})
+
+	for ver in "${TOTAL[@]}"; do
+		LIST="${LIST} ${ver##*'/'}"
+	done
+
+	ARR_LIST=(${LIST[@]})
+	ARR_END=${#ARR_LIST[@]}
+	# shellcheck disable=SC2034
+	NEW_ARR_END=$((ARR_END*2-1))
+
+	for (( i=NEW_ARR_END; i>0; i=i-2 ))
+	do
+		iOLD=$(((i-1)/2))
+		ARR_LIST[i]=" "
+		ARR_LIST[i-1]=${ARR_LIST[$iOLD]}
+	done
+}
+
+# Not using whiptail for Ubuntu - too many selection choices
+function select_kernel_deb(){
+	get_debian_list
+
+	# Override if using 'LATEST' else whiptail menu
+	if [[ $USE_LATEST -eq 1 ]] ; then
+		if [[ $1 != "quiet" ]]; then
+			echo -e "\n\nScript started with ${Yellow}LATEST${Reg} option."
+		fi
+		OPTION="${ARR_LIST[0]}"
+	else
+		OPTION=$(whiptail --title "Available Kernels" --backtitle "${BACKTITLE}" --menu "Select kernel arhive to download" 20 80 "${ARR_END}" "${ARR_LIST[@]}" 3>&1 1>&2 2>&3)
+	fi
+
+	if [[ -n ${OPTION} ]]; then
+		TGTFILE=$(printf "%s\n" "${TOTAL[@]}" | grep "${OPTION}");
+	else
+		whip_msg  "Select Kernel Cancel" "No kernel was selected.\nExiting and cleaning up."
+		exit 0
+	fi
+}
+
+function get_kernel_archive(){
+	TEMPFILES+=( "${OUTPUT}" )
+	# shellcheck disable=SC2016
+	eval wget -O "${OUTPUT}" "${TGTFILE}" 2>&1 | \
+	stdbuf -o0 awk '/[.] +[0-9][0-9]?[0-9]?%/ { print substr($0,63,3) }' | \
+	whiptail --title "Download Kernel Archive" --backtitle "${BACKTITLE}" --gauge "Downloading kernel archive . . ." 7 70 0
+
+	err=${PIPESTATUS[0]}
+	if [ $err -ne 0 ]; then
+		error "Func: print_kernels" "Download source failure." $err
+	fi
+
+	SIGNurl=$(sed 's/.xz/.sign/g' <<< ${TGTFILE})
+	SIGNfile=$(sed 's/.xz/.xz.sign/g' <<< ${OPTION})
+	TEMPFILES+=( "${SIGNfile}" )
+	# shellcheck disable=SC2016
+	wget -O "${SIGNfile}" "${SIGNurl}" 2>&1 | \
+	stdbuf -o0 awk '/[.] +[0-9][0-9]?[0-9]?%/ { print substr($0,63,3) }' | \
+	whiptail --title "Download Kernel Archive" --backtitle "${BACKTITLE}" --gauge "Downloading signature file . . ." 7 70 0
+
+	err=${PIPESTATUS[0]}
+	if [ $err -ne 0 ]
+	then
+		error "Func: print_kernels" "Download signature file failure." $err
+	fi
+}
+
+function select_kernel_ubu(){
+	if [[ $USE_LATEST -eq 1 ]] ; then
+		echo -e "\n\nScript started with ${Yellow}LATEST${Reg} option."
+		INPUT=1
+		if [[ $lowlatency -eq 1 ]] ; then
+			echo -e "Script started with ${Yellow}LOWLATENCY${Reg} option."
+		fi
+	else
+		echo -n -e "\n\nSelect your desired kernel: "
+		read INPUT
+
+		# Check for offered choices
+		if [[ $((INPUT)) != $INPUT ]] || [ "$INPUT" -gt $NUMOPTS ]; then
+			reqexit
+		fi
+		select_low_latency
+	fi
+}
+
+function select_low_latency(){
+	# Prompt for Ubuntu Low Latency kernel
+	if [ "$(basename "$0")" = "update_ubuntu_kernel.sh" ]; then
+		echo ""
+		if [[ $lowlatency -eq -1 ]] ; then
+			# Set low latency default to no
+			read -p "Do you want the lowlatency kernel? (y/[n]):" lowlatency
+			case "$lowlatency" in
+				y* | Y*) lowlatency=1 ;;
+				*) lowlatency=0 ;;
+			esac
+		fi
+		echo ""
+	fi
+}
+
+function chk_latest(){
+	if [[ $USE_LATEST -eq 1 ]] ; then
+		local CHKLATEST=(${TOTAL//'\n'/ })
+		if [[ "${CHKLATEST[1]}" == *"${CHKLATEST[0]}"* ]]; then
+			((INPUT++))
+		fi
+	fi
+}
+
+function get_precompiled_ubu_kernel(){
+	get_arch
+	# shellcheck disable=SC2128
+	# Confirm actual latest release from Ubuntu page
+	chk_latest
+
+	for ver in $(echo -e "$TOTAL"); do
+		((COUNT++))
+		if [ $COUNT -eq "$INPUT" ]; then
+			# shellcheck disable=SC2034
+			for verd in $(echo -e "$DOWN"); do
+				((COUNTD++))
+				if [ $COUNTD -eq "$INPUT" ]; then
+					# Download Kernel
+					if [ ${lowlatency} -eq 1 ]; then
+						KTYPE="lowlatency"
+					else
+						KTYPE="generic"
+					fi
+					echo -e "${Cyan} \_ Locating source of ${ver} ${KTYPE} kernel packages.${Reg}"
+
+					RSLT=$(lynx -dump -listonly -dont-wrap-pre "${BASEURL}/${ver}" | grep "$1" | grep "$2" | grep "$arch" | grep -v "BUILD.LOG" | rev | cut -d ' ' -f 1 | rev | uniq)
+
+					if [[ -z ${RSLT} ]]; then
+						# shellcheck disable=SC2154
+						whip_msg "${w_title_two}" "${w_msg_two}"
+						exit
+					else
+						get_ubu_shared_header
+						get_ubu_files ${KTYPE} header
+						get_ubu_files ${KTYPE} image
+						get_ubu_files ${KTYPE} modules
+					fi
+				fi
+			done
+		fi
+	done
+	echo -e "${Cyan} \_ Done${Reg}\n"
+}
+
+function get_ubu_shared_header(){
+	TEMPFILES+=( "${ver}" )
+	# shellcheck disable=SC2016
+	eval wget "$(lynx -dump -listonly -dont-wrap-pre ${BASEURL}/${ver} | grep headers | grep all | rev | cut -d ' ' -f 1 | rev | uniq)" 2>&1 | \
+	stdbuf -o0 awk '/[.] +[0-9][0-9]?[0-9]?%/ { print substr($0,63,3) }' | \
+	whiptail --title "Download Precompiled Ubuntu Kernel Packages" --backtitle "${BACKTITLE}" --gauge "Downloading ${ver} shared header . . ." 7 70 0
+	err=${PIPESTATUS[0]}
+	if [ $err -ne 0 ]; then
+		error "Download package failure." "There was a problem downloading the packages. Exiting." $err
+	fi
+}
+
+function get_ubu_files() {
+	TEMPFILES+=( "${ver}" )
+	# shellcheck disable=SC2016
+	eval wget "$(lynx -dump -listonly -dont-wrap-pre ${BASEURL}/${ver} | grep $1 | grep $2 | grep $arch | rev | cut -d ' ' -f 1 | rev | uniq)" 2>&1 | \
+	stdbuf -o0 awk '/[.] +[0-9][0-9]?[0-9]?%/ { print substr($0,63,3) }' | \
+	whiptail --title "Download Precompiled Ubuntu Kernel Packages" --backtitle "${BACKTITLE}" --gauge "Downloading ${ver} ${1} ${2} . . ." 7 70 0
+
+	err=${PIPESTATUS[0]}
+	if [ $err -ne 0 ]; then
+		error "Download package failure." "There was a problem downloading the packages. Exiting." $err
+	fi
+}
+
+function install_key(){
+    gpg --keyserver pgp.mit.edu --recv-keys "$CHK_ID" --keyserver
+}
+
+######
+# Spinner that watches a background process
+######
+function spinner(){
+	local pid=$1
+	# Spinner Character
+	SPINNER="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+	tput civis;
+	local infotext=$2
+	# shellcheck disable=SC2143
+	while [ "$(ps a | awk '{print $1}' | grep "$pid")" ]; do
+		for (( i=0; i<${#SPINNER}; i++ )); do
+			sleep 0.05
+			printf "${CL}${SPINNER:$i:1} ${infotext} ${msg}\r"
+		done
+	done
+	printf " \b\b\b\b"
+	tput cnorm;
+}
+
+function update(){
+	MSG="-- Installing Dependencies --"
+    center-text "${Cyan}" "${MSG}" "${Reg}"
+	echo -e "\n${Yellow}[!]${Reg} The first time this script is run missing dependencies will be installed."
+	echo -e "    For compiling a kernel this may take a bit of time. Feedback will be provided.\n"
+	echo -e "${PLUS} Dependencies"
+	echo -e " \_Elevating permissions as necessary . . ."
+	$SUDO echo -e "[%] ${Green}Elevated${Reg}\n"
+	EXIT_STAT=$?
+	if [ $EXIT_STAT -ne 0 ]; then
+		error ${LINENO} "An error occured while elevating permissions." $EXIT_STAT
+	fi
+	echo -e "${PLUS} Testing for previous held packages and trying to correct any found."
+	$SUDO apt-get -qqf install &>/dev/null
+	EXIT_STAT=$?
+	if [ $EXIT_STAT -ne 0 ]; then
+		error ${LINENO} "An error occured while examining possible apt held packages." $EXIT_STAT
+	fi
+	echo -e " \_${Green}Passed${Reg}\n"
+	start_spinner "Updating package cache . . ."
+		$SUDO apt-get update &>/dev/null
+	stop_spinner 0
+	clearline
+	echo -e "${PLUS} Updating package cache . . ."
+	echo -e " \_${Green}Complete${Reg}\n"
+	for dep in ${TOINSTALL}
+	do
+		start_spinner "Installing ${dep} . . ."
+			$SUDO apt-get -qq -y install "${dep}" &>/dev/null
+		stop_spinner 0
+		clearline
+	done
+	echo -e "${PLUS} Installing dependencies . . ."
+	unset TOINSTALL
+	echo -e " \_${Green}Complete${Reg}\n"
+	UPDATENEEDED=0
+	tput clear
+	chk_deps
+}
+
+function countdown(){
+	local txt=$1
+	local secs=$2
+	while [ "$secs" -gt 0 ]; do
+		echo -ne "$txt $secs\033[0K\r"
+		sleep 1
+		: $((secs--))
+	done
+}
+
+function sudobg() {
+	$SUDO echo ""
+	$SUDO "$@" > /dev/null 2>&1 &
+	# shellcheck disable=SC2034
+	BGPID=$!
+}
+
+# TRAPS
+TEMPFILES=( )
+function cleanupfiles() {
+	if [ -n  "${TEMPFILES}" ]; then
+		rm -f "${TEMPFILES[@]}"
+	fi
+	if [ $AV -eq 1 -a $AV_ACTIVE -eq 1 ]; then
+		echo -e "${PLUS} Restoring AntiVirus"
+		sophosON
+	fi
+}
+trap cleanupfiles 0
+
+# shellcheck disable=SC2120
+function check_sign(){
+	start_spinner "Checking archive signature . . ."
+	CHK_SIGN=$(unxz -c "${OUTPUT}" | gpg --verify "${SIGNfile}" - 2>&1)
+	CHK_ID=$(grep -Po -- 'RSA key ID \K\w*' <<< "$CHK_SIGN")
+	if [ -z $CHK_ID ]; then
+		CHK_ID=$(grep -Po -- 'using RSA key \K\w*' <<< "$CHK_SIGN")
+	fi
+	if [ -z $CHK_ID ]; then
+
+		error "Func: check_sign" "Could not parse RSA key ID. Exiting." $1
+	fi
+
+	stop_spinner 0
+	clearline
+	echo -en "\e[1A"
+	echo -e "\n${PLUS} Checking archive signature . . ."
+
+	if ! chk_got_keyID; then
+		if [ $# -ne 0 ] && [[ "${1}" == "add" ]]; then
+			INSTALL_ID="y"
+		else
+			local KEY_INFO=$(gpg --batch --keyserver hkp://pgp.mit.edu --search-keys $CHK_ID 2>/dev/null)
+			echo -e "\n[!] The public key for this file was not found in your PGP store."
+			echo -e "[?] Do you want to install ID the key with ID: ${Yellow}$CHK_ID${Reg}\n"
+			echo -e "${Yellow}${KEY_INFO}${Reg}\n"
+			echo -e "    [Y]es  - Install the RSA key ID for ${Yellow}$CHK_ID${Reg}"
+			echo -e "    [n]o   - Do NOT install ID and EXIT"
+			echo -e "    [s]kip - Do NOT install ID and CONTINUE"
+			echo -n -e "\n\nSelect your desired action: "
+			read INSTALL_ID
+		fi
+
+		case $INSTALL_ID in
+			[Nn]*)
+				echo -e "NO - Exiting"
+				exit 0;
+				;;
+			[Ss]*)
+				echo -e "SKIP - Skipping GPG signature check."
+				;;
+			*) echo -e "YES - Installing new GPG key and checking archive."
+				install_key
+				# shellcheck disable=SC2119
+				check_sign
+		esac
+	else
+		CHK_SIGN_VALID=$(grep -Po -- 'Good signature from' <<< "$CHK_SIGN")
+		if [[ "$CHK_SIGN_VALID" == "Good signature from" ]] ; then
+			echo -e " \_ Signature validated: ${Green}$CHK_ID${Reg}\n"
+		else
+			error "Func: chk_sign" "Signature invalid. Exiting." 1
+		fi
+	fi
+}
+
+function chk_got_keyID(){
+	local NO_KEY=$(grep -Eo 'public key not found|No public key' <<<$CHK_SIGN)
+	if [[ -z $NO_KEY ]]; then
+		return 0
+	fi
+	return 1
+}
+
+function clearline(){
+	echo -ne "\033[2K" ; printf "\r"
+}
+
+#####
+# Spinner for foreground processes
+#####
+function _spinner() {
+
+	case $1 in
+		start)
+			CL="\e[2K"
+			SPINNER="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+			tput civis;
+			local infotext=$2
+			while :
+			do
+				for (( i=0; i<${#SPINNER}; i++ )); do
+					sleep 0.05
+					printf "${CL}${SPINNER:$i:1} ${infotext}\r"
+				done
+			done
+			#printf " \b\b\b\b"
+			tput cnorm;
+			;;
+		stop)
+			kill "$3"
+			wait "$3" 2>/dev/null
+			;;
+		*)
+			echo "invalid argument, try {start/stop}"
+			exit 1
+			;;
+	esac
+}
+
+function start_spinner() {
+	# $1 : msg to display
+	_spinner "start" "${1}" &
+	# set global spinner pid
+	_sp_pid=$!
+}
+
+function stop_spinner() {
+	# $1 : command exit status
+	_spinner "stop" "${1}" ${_sp_pid}
+	unset _sp_pid
+}
+
+function center-text() {
+	function get_width () {
+		wc -L <<< "$1"
+	}
+	function multi_space() {
+		num=$1
+		if [ "$num" -le 0 ]; then
+			echo ""
+			return
+		fi
+		v=$(printf "%-${num}s" " ")
+		echo "$v"
+	}
+
+	columns="$(tput cols)"
+
+	for line in "$@"
+	do
+		width=$(get_width "$line")
+		left_padding=$(( (columns-width) / 2))
+		if [ $left_padding -lt 0 ]; then
+			left_padding=0
+		fi
+		spaces=$(multi_space "$left_padding")
+		printf "%s%s\n" "$spaces" "$line"
+	done
+}
+
+function get_script_dir () {
+	SOURCE="${BASH_SOURCE[0]}"
+	# While $SOURCE is a symlink, resolve it
+	while [ -h "$SOURCE" ]; do
+		DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+		SOURCE="$( readlink "$SOURCE" )"
+		# If $SOURCE was a relative symlink (so no "/" as prefix, need to resolve it relative to the symlink base directory
+		[[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+	done
+	DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+	echo "$DIR"
+}
+
+function chk_version (){
+	CURVER=$(wget -O- -q https://raw.github.com/mtompkins/linux-kernel-utilities/master/version)
+	LOCVER=$(cat "version")
+	if [[ "${CURVER}" != "${LOCVER}" ]]; then
+		# shellcheck disable=SC2154
+		if ! (whiptail --yesno --defaultno --title "${w_title_four}" "${w_msg_four}" 20 80); then
+			whip_msg  "Exiting for update" "Exiting and cleaning up."
+			exit 0
+		fi
+	fi
+}
+
+function show_version (){
+	revisioncount=$(git log --oneline | wc -l)
+	projectversion=$(git describe --tags --long)
+	echo "Linux Kernel Utilities - Version: $projectversion-$revisioncount"
+}
+
+function is_remote(){
+	if [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; then
+		# 0 = true
+		return 0;
+		##SESSION_TYPE=remote/ssh
+	else
+		# shellcheck disable=SC2034
+		case $(ps -o comm= -p $PPID) in
+			##sshd|*/sshd) SESSION_TYPE=remote/ssh;;
+			sshd|*/sshd) return 0;;
+		esac
+	fi
+	# 1 = false
+	return 1;
+}
+
+function show_help_update(){
+	echo -e $c_msg_one
+}
+
+function show_help_comp(){
+	echo -e $c_msg_two
+}
+
+function parse_opts_ubu(){
+	while getopts ":hlov-" opt; do
+		case "$opt" in
+			h)	show_help_update
+				exit 0
+				;;
+			l)	USE_LATEST=1
+				;;
+			o)	lowlatency=1
+				;;
+			v)	show_version
+				exit 0
+				;;
+			-)	[ $OPTIND -ge 1 ] && optind=$(expr $OPTIND - 1 ) || optind=$OPTIND
+				eval OPTION="\$$optind"
+				OPTARG=$(echo $OPTION | cut -d'=' -f2)
+				OPTION=$(echo $OPTION | cut -d'=' -f1)
+				case $OPTION in
+					--help)		show_help_update
+								exit 0
+								;;
+					--latest)	USE_LATEST=1
+								;;
+					--low)		lowlatency=1
+								;;
+					--version)	show_version
+								exit 0
+								;;
+					*)			echo -e "Invalid option: $OPTION\n" >&2
+								show_help_update
+								exit 1
+								;;
+				esac
+				OPTIND=1
+				shift
+				;;
+			\?)
+				echo -e "Invalid option: -$OPTARG\n" >&2
+				show_help_update
+				exit 1
+				;;
+		esac
+	done
+	shift "$((OPTIND-1))" #Shift off the options and optional --
+}
+
+function parse_opts_comp(){
+	while getopts ":A:hlvP:-" opt; do
+		case "$opt" in
+			A)	if [ ! -e "$OPTARG" ]; then
+					error ${LINENO} "The kernel archive file: $OPTARG was not found." 1
+				fi
+				OUTPUT="$OPTARG"
+				LOCALFILE=1
+				;;
+			h)	show_help_comp
+				exit 0
+				;;
+			l)	USE_LATEST=1
+				;;
+			P)	shopt -s nullglob
+				PROFILES=(profiles/*)
+				for FILE in "${PROFILES[@]}"; do
+					if [[ "profiles/$OPTARG" == "${FILE}" ]]; then
+						. profiles/"$OPTARG"
+						$OPTARG
+					fi
+				done
+				error ${LINENO} "$OPTARG is not a file or the profile does not exist." 1
+				;;
+			v)	show_version
+				exit 0
+				;;
+			-)	[ $OPTIND -ge 1 ] && optind=$(expr $OPTIND - 1 ) || optind=$OPTIND
+				eval OPTION="\$$optind"
+				OPTARG=$(echo $OPTION | cut -d'=' -f2)
+				OPTION=$(echo $OPTION | cut -d'=' -f1)
+				case $OPTION in
+					--archive)	if [[ "$OPTARG" == "--archive" ]]; then
+									error ${LINENO} "Either you did not enter an archive file location,\nor you did not use the correct argument format.\n\nYou must use the form --archive=</path/to/archive.tar.xz>\n\nExample: --archive=linux-4.8.8.tar.xz" 1
+								fi
+								if [ ! -e "$OPTARG" ]; then
+									error ${LINENO} "The kernel archive file: $OPTARG was not found." 1
+								fi
+								OUTPUT="$OPTARG"
+								LOCALFILE=1
+								;;
+					--help)		show_help_comp
+								exit 0
+								;;
+					--latest)	USE_LATEST=1
+								;;
+					--profile)	if [[ "$OPTARG" == "--profile" ]]; then
+									error ${LINENO} "Either you did not enter a profile name,\nor you did not use the correct argument format.\n\nYou must use the form --profile=<profileName>\n\nExample: --profile=zeus" 1
+								fi
+								shopt -s nullglob
+								PROFILES=(profiles/*)
+								for FILE in "${PROFILES[@]}"; do
+									if [[ "profiles/$OPTARG" == "${FILE}" ]]; then
+										. profiles/"$OPTARG"
+										$OPTARG
+									fi
+								done
+								error ${LINENO} "$OPTARG is not a file or the profile does not exist." 1
+								;;
+					--version)	show_version
+								exit 0
+								;;
+					*)			echo -e "Invalid option: $OPTION\n" >&2
+								show_help_comp
+								exit 1
+								;;
+				esac
+				OPTIND=1
+				shift
+				;;
+			\?)	echo -e "Invalid option: -$OPTARG\n" >&2
+				show_help_comp
+				exit 1
+				;;
+			:)	error ${LINENO} "Missing required option argument for -$OPTARG." 1
+				;;
+		esac
+	done
+	shift "$((OPTIND-1))" #Shift off the options and optional --
+}
+
+# Used to temporarily disable Sophos AntiVirus
+# This is a file not included in the Git repo I use to disable AV during updates
+if [ -s $HOME/.aliases/sophos ]; then
+	. $HOME/.aliases/sophos
+	AV=1
+fi

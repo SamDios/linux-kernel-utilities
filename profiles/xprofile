@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+
+xprofile(){
+	MSG="-- Automatic kernel compilation by profile started --"
+    center-text "${LimeYellow}" "${MSG}" "${Reg}"
+    echo -e "Caching elevated permissions in case of missing dependencies."
+    $SUDO echo
+    # If not root, check member os sudo
+    if [[ $EUID -ne 0 ]]; then
+        chk_sudoer
+    fi
+    #Do not background dependency check - it calls sudobg 
+    echo -e "${PLUS} Checking Dependencies"
+        chk_deps
+    echo -e "${PLUS} Managing dependencies"
+    echo -e " \_${Green}Complete${Reg}"
+    
+    if [[ QT5CHECK -eq 1 ]]; then
+        check_qt5
+    fi
+    
+    echo -e "\n${PLUS} Getting kernel archive . . ."
+    select_kernel_deb quiet
+    get_kernel_archive
+    echo -e " \_${Green}Complete${Reg}"
+
+    check_sign ${KEY_HANDLER} 
+    
+    mkdir $CMP_FLDR
+    tar xf $OUTPUT -C ./$CMP_FLDR &
+    spinner $! "Extracting archive . . ."
+    wait $!
+    clearline
+    
+    pushd $CMP_FLDR/linux* &>/dev/null
+    
+    echo -e "${PLUS} Preparing the kernel tree . . .\n"
+    make mrproper &>/dev/null
+    EXIT_STAT=$?
+    if [ $EXIT_STAT -ne 0 ]
+    then
+        popd &>/dev/null
+	    error ${LINENO} "An error occured while preparing the kernel tree." $EXIT_STAT
+    fi
+    
+    echo -e "Configuring the kernel build . . .\n"
+    
+    make $KRNL_CONFIG &
+    wait $!
+    EXIT_STAT=$?
+    if [ $EXIT_STAT -ne 0 ]
+    then
+        popd &>/dev/null
+	    error ${LINENO} "An error occured while configuring the kernel." $EXIT_STAT
+    fi
+    
+    echo
+    
+    # Disable debug build
+    scripts/config --disable DEBUG_INFO &>/dev/null || error ${LINENO} "Error occurred while disabling DEBUG INFO." $?
+    
+    
+    make clean &>/dev/null &
+    spinner $! "Cleaning the kernel tree . . ."
+    wait $!
+    EXIT_STAT=$?
+    if [ $EXIT_STAT -ne 0 ]
+    then
+        popd &>/dev/null
+	    error ${LINENO} "An error occured while cleaning the kernel tree." $EXIT_STAT
+    fi
+    clearline
+    
+    MSG="-- Started compiling packages at $(date +%H:%M:%S) --"
+    center-text "${Cyan}" "${MSG}" "${Reg}"
+    
+    make -j${NUMTHREADS} deb-pkg LOCALVERSION=-${VERAPPEND} &>/dev/null &
+    PID=$!
+    spinner $PID "Compiling Kernel . . ."
+    wait $PID
+    EXIT_STAT=$?
+    clearline
+    
+    if [ $EXIT_STAT -ne 0 ]
+	then
+        popd &>/dev/null
+		error ${LINENO} "An error occured while compiling the kernel." $EXIT_STAT
+	else
+        echo -en "\e[1A"
+	    echo -e "\n${PLUS} Compiling Kernel . . ."
+        echo -e " \_ ${Green}Done${Reg}\n"
+    fi
+    
+    make -j${NUMTHREADS} modules LOCALVERSION=-${VERAPPEND} &>/dev/null &
+    PID=$!
+    spinner $PID "Compiling Modules . . ."
+    wait $PID
+    EXIT_STAT=$?
+    clearline
+    
+	if [ $EXIT_STAT -ne 0 ]
+	then
+        popd &>/dev/null
+		error ${LINENO} "An error occured while compiling modules." $EXIT_STAT
+	else
+		echo -e $'\a' && notify-send -i emblem-default "Kernel and modules compliations completed."
+		echo -en "\e[1A"
+	    echo -e "\n${PLUS} Compiling Modules . . ."
+        echo -e " \_ ${Green}Done${Reg}\n"
+	fi
+    
+    echo -ne "You can install the deb packages with:\n"
+    SCRIPTDIR=$(get_script_dir)
+    PARENTDIR="$(dirname "$SCRIPTDIR")"
+    MSG="sudo dpkg -i ${PARENTDIR}/*.deb"
+    center-text "${LimeYellow}" "${MSG}" "${Reg}"
+    
+    echo -ne "You can install the modules with:\n"
+    #MSG="cd ${SCRIPTDIR}/${CMP_FLDR}/$(basename "$TGTFILE") && sudo make modules_install"
+    MSG="cd ${SCRIPTDIR} && sudo make modules_install"
+    center-text "${LimeYellow}" "${MSG}" "${Reg}"
+
+    echo -e "${Green}[%] Complete${Reg}"
+    
+    cleanup
+    popd &>/dev/null
+    
+    exit 0
+}
