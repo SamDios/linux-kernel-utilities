@@ -20,6 +20,9 @@ before_install:
   - sudo apt -y install bats gcc make fakeroot libncurses5 libncurses5-dev kernel-package build-essential pkg-config libnotify-bin gnupg qt56tools qt56svg qt56script
   #- sudo gem install bundler
   #- sudo bundle update
+  - sudo gem pristine executable-hooks --version 1.5.0
+  - sudo gem pristine gem-wrappers --version 1.4.0
+  - sudo gem pristine nokogiri --version 1.10.2
   - sudo gem install ffi
   - sudo gem install fpm
 script: 
