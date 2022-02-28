@@ -1,6 +1,25 @@
 # linux-kernel-utilities Changelog
 
-## v1.1.7 (Pending)
+## v1.1.9 (Feb 28, 2022)
+NEW FEATURES
+- Add ARM
+
+IMPROVEMENTS
+- none
+
+FIXES
+- none
+
+DEPRECATED
+- none
+
+WORK IN PROCESS
+- none
+
+TO DO
+- Update unit tests for `make deb-pkg`
+
+## v1.1.7 ()
 NEW FEATURES
 - none
 
