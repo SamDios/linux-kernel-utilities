@@ -37,30 +37,11 @@ This may not be prudent for some as this will leave no default / backup safety k
 
 ## Installation
 
-### Method 1: (Recommended) - Download and enable scripts wtih `git`
+### Download and enable scripts wtih `git`
 
     git clone https://github.com/mtompkins/linux-kernel-utilities.git
     cd linux-kernel-utilities
     chmod 750 *.sh
-
-### Method 2: DEB packages
-
-Standard DEB installation packages are available from the [Releases](https://github.com/mtompkins/linux-kernel-utilities/releases) section.  
-
-Install:
-
-    sudo dpkg -i linux-kernel-utilities*.deb
-
-Remove:
-
-    sudo dpkg -r linux-kernel-utilities 
-
-**Notes:**
-
-- Scripts are installed to `/opt` when using **DEB** packages.
-- Scripts will prompt to update when necessary. To update, use: `git pull`.
-
-----
 
 ## Usage
 
