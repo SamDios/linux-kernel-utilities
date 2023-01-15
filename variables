@@ -46,7 +46,7 @@ fi
 # Example: MINVER=4 will retrieve 4.x.x
 # Example: MINVER=5 will retrieve 5.x.x
 # shellcheck disable=SC2034
-MINVER=5
+MINVER=6
 
 # On my systems, I use SOPHOS antivirus
 # During the update of a kernel, I disable this
